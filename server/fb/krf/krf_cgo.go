@@ -24,7 +24,13 @@ package krf
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/native
-#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,\$ORIGIN
+// On Linux we force-link libgcc_s.so alongside libkrfiles so that its
+// ARM64 LSE atomic helpers (__aarch64_ldadd8_acq_rel and friends) resolve
+// through the shared libgcc runtime. Without -lgcc_s the Go toolchain's
+// default static libgcc hides those symbols and the final link fails
+// with "hidden symbol referenced by DSO" on aarch64 runners. amd64 links
+// identically so the flag stays unconditional across both Linux targets.
+#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -lgcc_s -Wl,-rpath,\$ORIGIN
 #cgo darwin LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,@loader_path
 
 #include <stdlib.h>

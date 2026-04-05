@@ -61,6 +61,14 @@ trap 'rm -f "$TMP_ARCHIVE"' EXIT
 curl -fsSL -o "$TMP_ARCHIVE" "$ARCHIVE_URL"
 tar xzf "$TMP_ARCHIVE" -C "$DEST_DIR"
 
+# The macOS archive ships the .dSYM debug-symbol bundle alongside the
+# dylib. We do not need it at runtime (Mattermost does not symbolicate
+# plugin crashes) and it breaks naive `cp native/libkrfiles.*` wildcards
+# on CI bash because the expansion matches a directory and cp refuses
+# without -R. Drop it eagerly so every downstream step sees a clean set
+# of regular files.
+rm -rf "$DEST_DIR"/libkrfiles.dylib.dSYM
+
 # Sanity-check that the archive brought the three files we need to compile
 # against it: the shared library, the generated C header, and the shim that
 # flattens the Kotlin/Native vtable (added in krfiles v0.1.1).
