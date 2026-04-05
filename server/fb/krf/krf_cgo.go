@@ -24,13 +24,16 @@ package krf
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/native
-// On Linux we force-link libgcc_s.so alongside libkrfiles so that its
-// ARM64 LSE atomic helpers (__aarch64_ldadd8_acq_rel and friends) resolve
-// through the shared libgcc runtime. Without -lgcc_s the Go toolchain's
-// default static libgcc hides those symbols and the final link fails
-// with "hidden symbol referenced by DSO" on aarch64 runners. amd64 links
-// identically so the flag stays unconditional across both Linux targets.
-#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -lgcc_s -Wl,-rpath,\$ORIGIN
+// On Linux we tell the linker to ignore unresolved symbols that originate
+// in shared libraries. libkrfiles.so references a handful of ARM64 LSE
+// atomic helpers (__aarch64_ldadd8_acq_rel and friends) that live in the
+// static libgcc.a as hidden symbols — gcc's auto-linked libgcc.a cannot
+// satisfy them from a DSO reference, so the link fails with "hidden symbol
+// referenced by DSO" on aarch64. Deferring resolution to runtime ld.so is
+// the standard fix and matches how every other consumer of libkrfiles.so
+// works: the shared library brings its own libgcc_s dependency and the
+// dynamic loader resolves the atomics against it when the plugin loads.
+#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,\$ORIGIN -Wl,--unresolved-symbols=ignore-in-shared-libs
 #cgo darwin LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,@loader_path
 
 #include <stdlib.h>
