@@ -1,0 +1,18 @@
+# Go
+*.test
+*.out
+coverage.*
+dist/
+bin/
+vendor/
+
+# Native libraries downloaded at build time by build/fetch-krfiles.sh
+server/fb/krf/native/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Mattermost
+*.tar.gz

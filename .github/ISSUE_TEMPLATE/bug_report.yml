@@ -1,0 +1,62 @@
+name: Bug Report
+description: Report a bug or unexpected behaviour in the Filebrowser plugin
+labels: ["bug"]
+body:
+  - type: input
+    id: mattermost_version
+    attributes:
+      label: Mattermost server version
+      placeholder: "9.11.2"
+    validations:
+      required: true
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: filebrowser_version
+    attributes:
+      label: Filebrowser version
+      placeholder: "2.31.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Server OS / arch
+      options:
+        - linux / amd64
+        - linux / arm64
+        - darwin / amd64
+        - darwin / arm64
+        - other (describe in the bug body)
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      placeholder: Describe the bug — what did you type, what did you see, what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. `/filebrowser connect` as user …
+        2. `/filebrowser browse /reports`
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant server logs
+      description: Entries from `mattermost.log` that start with `plugin.com.github.rolandh15.filebrowser`.
+      render: shell
+    validations:
+      required: false

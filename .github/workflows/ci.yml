@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check VERSION matches plugin.json
+        run: |
+          FILE_VERSION=$(cat VERSION)
+          MANIFEST_VERSION=$(jq -r .version plugin.json)
+          if [ "$FILE_VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "::error::VERSION file ($FILE_VERSION) does not match plugin.json version ($MANIFEST_VERSION)"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+      - name: Validate plugin.json schema
+        run: |
+          # Minimal validation — make sure the manifest parses and has the
+          # fields the Mattermost server will look up.
+          jq -e '.id and .server.executables and .settings_schema' plugin.json > /dev/null
+
+  build-matrix:
+    name: Build (${{ matrix.target }})
+    needs: verify
+    strategy:
+      matrix:
+        include:
+          - target: linux-amd64
+            os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - target: linux-arm64
+            os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - target: darwin-amd64
+            os: macos-13
+            goos: darwin
+            goarch: amd64
+          - target: darwin-arm64
+            os: macos-latest
+            goos: darwin
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Build server binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p server/dist
+          go build -trimpath -o server/dist/plugin-${{ matrix.target }} ./server
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-${{ matrix.target }}
+          path: server/dist/plugin-${{ matrix.target }}

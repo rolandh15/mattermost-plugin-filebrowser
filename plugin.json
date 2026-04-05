@@ -1,0 +1,32 @@
+{
+    "id": "com.github.rolandh15.filebrowser",
+    "name": "Filebrowser",
+    "description": "Browse, share and upload files from a Filebrowser instance straight from Mattermost slash commands. Backed by the krfiles Kotlin Multiplatform library via Go cgo.",
+    "homepage_url": "https://github.com/rolandh15/mattermost-plugin-filebrowser",
+    "support_url": "https://github.com/rolandh15/mattermost-plugin-filebrowser/issues",
+    "icon_path": "assets/icon.svg",
+    "version": "0.1.0",
+    "min_server_version": "9.5.0",
+    "server": {
+        "executables": {
+            "linux-amd64": "server/dist/plugin-linux-amd64",
+            "linux-arm64": "server/dist/plugin-linux-arm64",
+            "darwin-amd64": "server/dist/plugin-darwin-amd64",
+            "darwin-arm64": "server/dist/plugin-darwin-arm64"
+        }
+    },
+    "settings_schema": {
+        "header": "Filebrowser plugin settings. The URL below must point at a reachable Filebrowser instance. Individual users authenticate themselves with `/filebrowser connect` — their credentials are never visible to the admin.",
+        "footer": "Plugin icon: file-browser icon from heroicons.",
+        "settings": [
+            {
+                "key": "FilebrowserURL",
+                "display_name": "Filebrowser URL",
+                "type": "text",
+                "help_text": "Base URL of your Filebrowser instance, e.g. `https://files.example.com`. No trailing slash.",
+                "placeholder": "https://files.example.com",
+                "default": ""
+            }
+        ]
+    }
+}
