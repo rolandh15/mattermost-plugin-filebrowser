@@ -54,6 +54,14 @@ jobs:
         run: go vet ./...
 
       - name: go test
+        # LD_LIBRARY_PATH points at the fetched libkrfiles.so so the test
+        # binary for the `server` package — which imports krf transitively
+        # via plugin.go — can resolve its shared-library dependency at
+        # startup. The tests themselves never call any krf method (they
+        # exercise fb.Fake), but Go's dynamic loader has to open every
+        # DT_NEEDED entry before main().
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/server/fb/krf/native
         run: go test -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage report
