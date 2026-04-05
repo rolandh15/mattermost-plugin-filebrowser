@@ -17,6 +17,12 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    # The verify job exercises the stub-only (CGO_ENABLED=0) build path so
+    # unit tests run without needing libkrfiles.{so,dylib}. The cgo-enabled
+    # path is validated end-to-end in the per-target build-matrix jobs
+    # below, which each fetch the matching krfiles native artifact.
+    env:
+      CGO_ENABLED: '0'
     steps:
       - uses: actions/checkout@v4
 
