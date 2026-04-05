@@ -17,12 +17,15 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
-    # The verify job exercises the stub-only (CGO_ENABLED=0) build path so
-    # unit tests run without needing libkrfiles.{so,dylib}. The cgo-enabled
-    # path is validated end-to-end in the per-target build-matrix jobs
-    # below, which each fetch the matching krfiles native artifact.
+    # Verify runs `go vet` and `go test -race` across the whole tree. The
+    # race detector needs cgo, and enabling cgo means the krf package's
+    # build-tagged cgo file gets compiled too, which requires the krfiles
+    # native headers on disk. So Verify fetches linux-amd64 krfiles before
+    # vet/test — the shared library itself is never invoked because the
+    # tests exercise fb.Fake, but the header has to exist for cgo to
+    # compile the shim bridge translation unit.
     env:
-      CGO_ENABLED: '0'
+      CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*'
     steps:
       - uses: actions/checkout@v4
 
@@ -40,6 +43,9 @@ jobs:
         with:
           go-version: '1.25'
           cache: true
+
+      - name: Fetch krfiles native artifacts (linux-amd64)
+        run: ./build/fetch-krfiles.sh linux-amd64
 
       - name: Download modules
         run: go mod download
