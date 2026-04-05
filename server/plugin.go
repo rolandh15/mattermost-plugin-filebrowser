@@ -10,6 +10,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 
 	"github.com/rolandh15/mattermost-plugin-filebrowser/server/command"
+	"github.com/rolandh15/mattermost-plugin-filebrowser/server/fb/krf"
 )
 
 // commandTrigger is the slash command users type in Mattermost: `/filebrowser ...`.
@@ -33,8 +34,9 @@ type Plugin struct {
 }
 
 // OnActivate is called by the Mattermost server when the plugin is installed or
-// enabled. We load the admin-console configuration, validate it, and register
-// the `/filebrowser` slash command.
+// enabled. We load the admin-console configuration, validate it, build the
+// krfiles-backed Filebrowser client, wire a KVStore-backed TokenStore into
+// the command router, and register the `/filebrowser` slash command.
 func (p *Plugin) OnActivate() error {
 	cfg := &configuration{}
 	if err := p.API.LoadPluginConfiguration(cfg); err != nil {
@@ -44,6 +46,15 @@ func (p *Plugin) OnActivate() error {
 		return err
 	}
 	p.setConfiguration(cfg)
+
+	// Build the native-backed Filebrowser client. In cgo builds this
+	// constructs the krfiles shim's global client; in the stub build
+	// (unit tests with CGO_ENABLED=0) it is a no-op wrapper whose
+	// methods all return ErrCgoDisabled — harmless because nothing in
+	// OnActivate actually calls into it. The plugin therefore activates
+	// identically in both modes and only fails at the point a user runs
+	// a command that needs the shared library.
+	p.router = command.New(krf.New(cfg.FilebrowserURL), newKVTokenStore(p.API))
 
 	if err := p.API.RegisterCommand(p.buildCommand()); err != nil {
 		return fmt.Errorf("failed to register /%s command: %w", commandTrigger, err)

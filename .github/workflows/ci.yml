@@ -58,27 +58,25 @@ jobs:
           jq -e '.id and .server.executables and .settings_schema' plugin.json > /dev/null
 
   build-matrix:
+    # Each matrix job runs on a runner whose native OS/arch matches the
+    # target — we do not cross-compile because the cgo shim links against
+    # a krfiles native library fetched from a release archive, and the
+    # host toolchain needs to match the target ABI. Treat each runner as
+    # a first-class build host.
     name: Build (${{ matrix.target }})
     needs: verify
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: linux-amd64
             os: ubuntu-latest
-            goos: linux
-            goarch: amd64
           - target: linux-arm64
             os: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
           - target: darwin-amd64
             os: macos-13
-            goos: darwin
-            goarch: amd64
           - target: darwin-arm64
             os: macos-latest
-            goos: darwin
-            goarch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -89,17 +87,48 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Build server binary
-        env:
-          CGO_ENABLED: '0'
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          mkdir -p server/dist
-          go build -trimpath -o server/dist/plugin-${{ matrix.target }} ./server
+      - name: Fetch krfiles native artifacts
+        run: ./build/fetch-krfiles.sh ${{ matrix.target }}
 
-      - name: Upload binary
+      - name: Build native plugin binary
+        # CGO_LDFLAGS_ALLOW permits the rpath forms cgo's security
+        # allowlist rejects by default (@loader_path on macOS, $ORIGIN on
+        # Linux). Both are whitelisted here rather than in krf_cgo.go
+        # because cgo evaluates the allowlist at the package level before
+        # expansion.
+        env:
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*'
+        run: |
+          mkdir -p server/dist/${{ matrix.target }}
+          go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server
+          # Drop the matching shared library next to the binary. The
+          # bundle job (release.yml) and every Mattermost server rely on
+          # this being in the same directory as the binary because the
+          # linker baked rpath=@loader_path (Darwin) / $ORIGIN (Linux).
+          cp server/fb/krf/native/libkrfiles.* server/dist/${{ matrix.target }}/
+
+      - name: Verify the binary dynamically links libkrfiles
+        # Catches regressions where krf_shim_bridge.c disappears or the
+        # plugin somehow gets built without cgo: either mistake produces a
+        # static binary that silently skips the share command at runtime.
+        run: |
+          if [[ "${{ matrix.target }}" == darwin-* ]]; then
+            if ! otool -L server/dist/${{ matrix.target }}/plugin | grep -q "libkrfiles.dylib"; then
+              echo "::error::plugin binary does not link libkrfiles.dylib"
+              otool -L server/dist/${{ matrix.target }}/plugin
+              exit 1
+            fi
+          else
+            if ! ldd server/dist/${{ matrix.target }}/plugin 2>/dev/null | grep -q "libkrfiles.so"; then
+              echo "::error::plugin binary does not link libkrfiles.so"
+              ldd server/dist/${{ matrix.target }}/plugin || true
+              exit 1
+            fi
+          fi
+
+      - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
           name: plugin-${{ matrix.target }}
-          path: server/dist/plugin-${{ matrix.target }}
+          path: server/dist/${{ matrix.target }}/

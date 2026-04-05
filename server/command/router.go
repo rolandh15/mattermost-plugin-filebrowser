@@ -8,6 +8,7 @@ package command
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -16,11 +17,22 @@ import (
 
 // TokenStore persists per-user Filebrowser session tokens. The plugin backs
 // this with Mattermost's KVStore; tests use an in-memory implementation.
+//
+// Implementations of GetToken should return an error that wraps
+// ErrNotConnected (via errors.Is) when a user has never connected or has
+// disconnected — the router uses that to emit a friendly "run connect
+// first" message instead of a raw error.
 type TokenStore interface {
 	GetToken(ctx context.Context, mmUserID string) (string, error)
 	SetToken(ctx context.Context, mmUserID, token string) error
 	ClearToken(ctx context.Context, mmUserID string) error
 }
+
+// ErrNotConnected is the sentinel TokenStore implementations wrap when no
+// token exists for a user. It is intentionally exported from the command
+// package so tests can fabricate the condition without importing the
+// plugin's KVStore-backed implementation.
+var ErrNotConnected = errors.New("filebrowser: not connected")
 
 // Response is a framework-neutral command reply. The plugin translates it
 // into a *model.CommandResponse (ephemeral, with Text).
@@ -62,10 +74,15 @@ func (r *Router) Handle(ctx context.Context, mmUserID, raw string) (*Response, e
 	switch strings.ToLower(sub) {
 	case "", "help":
 		return helpResponse(), nil
+	case "connect":
+		return r.handleConnect(ctx, mmUserID, args)
+	case "share":
+		return r.handleShare(ctx, mmUserID, args)
 	case "disconnect":
 		return r.handleDisconnect(ctx, mmUserID)
+	case "browse", "save", "search":
+		return &Response{Text: fmt.Sprintf("`%s` is not available yet — it is scheduled for a follow-up release. For now, use `/filebrowser share` to get a link or manage files directly in the Filebrowser web UI.", sub)}, nil
 	default:
-		_ = args // handlers land here in follow-up MRs
 		return unknownResponse(sub), nil
 	}
 }
@@ -90,4 +107,70 @@ func (r *Router) handleDisconnect(ctx context.Context, mmUserID string) (*Respon
 		return nil, fmt.Errorf("disconnect: failed to clear token: %w", err)
 	}
 	return &Response{Text: "You have been disconnected from Filebrowser. Run `/filebrowser connect` to link again."}, nil
+}
+
+// handleConnect takes a username and password, calls client.Login, and
+// persists the returned token against the Mattermost user ID. It is the
+// only command that writes to TokenStore, and the only one that accepts
+// credentials — all follow-up commands read the token back out and pass
+// it to the Filebrowser client.
+//
+// The argument form is `/filebrowser connect <username> <password>`.
+// Passwords containing spaces are not supported today; the follow-up is
+// to replace this with an OpenDialogRequest so Mattermost renders a
+// password input that is never echoed into the channel. Until then, the
+// slash command is still safer than pasting credentials into a channel
+// because the server-side response is always ephemeral.
+func (r *Router) handleConnect(ctx context.Context, mmUserID string, args []string) (*Response, error) {
+	if len(args) < 2 {
+		return &Response{Text: "Usage: `/filebrowser connect <username> <password>`. Your credentials are stored only on the server and never visible to anyone else."}, nil
+	}
+	username, password := args[0], args[1]
+
+	token, err := r.client.Login(ctx, username, password)
+	if err != nil {
+		if errors.Is(err, fb.ErrUnauthorized) {
+			return &Response{Text: "Login failed — check your username and password and try again."}, nil
+		}
+		return nil, fmt.Errorf("connect: login failed: %w", err)
+	}
+
+	if err := r.tokens.SetToken(ctx, mmUserID, token); err != nil {
+		return nil, fmt.Errorf("connect: store token failed: %w", err)
+	}
+
+	return &Response{Text: fmt.Sprintf("Connected to Filebrowser as `%s`. You can now run `/filebrowser share <path>` to create share links.", username)}, nil
+}
+
+// handleShare resolves the user's stored token, asks the Filebrowser
+// backend for a share link, and returns the public URL back as an
+// ephemeral message. The user can then copy-paste it wherever they
+// like — the plugin intentionally never posts the URL into the channel
+// on the user's behalf.
+func (r *Router) handleShare(ctx context.Context, mmUserID string, args []string) (*Response, error) {
+	if len(args) < 1 {
+		return &Response{Text: "Usage: `/filebrowser share <path>` — for example `/filebrowser share /reports/q4.pdf`."}, nil
+	}
+	path := args[0]
+
+	token, err := r.tokens.GetToken(ctx, mmUserID)
+	if err != nil {
+		if errors.Is(err, ErrNotConnected) {
+			return &Response{Text: "You are not connected to Filebrowser. Run `/filebrowser connect <username> <password>` first."}, nil
+		}
+		return nil, fmt.Errorf("share: read token: %w", err)
+	}
+
+	url, err := r.client.Share(ctx, token, path)
+	if err != nil {
+		if errors.Is(err, fb.ErrUnauthorized) {
+			return &Response{Text: "Your Filebrowser session has expired. Run `/filebrowser connect` again to re-link your account."}, nil
+		}
+		if errors.Is(err, fb.ErrNotFound) {
+			return &Response{Text: fmt.Sprintf("No file found at `%s`. Double-check the path and try again.", path)}, nil
+		}
+		return nil, fmt.Errorf("share: create link failed: %w", err)
+	}
+
+	return &Response{Text: fmt.Sprintf("Share link for `%s`:\n\n%s", path, url)}, nil
 }
