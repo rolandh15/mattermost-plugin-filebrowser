@@ -80,7 +80,7 @@ jobs:
       - name: Build native plugin binary
         env:
           CGO_ENABLED: '1'
-          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-shared-libgcc'
         run: |
           mkdir -p server/dist/${{ matrix.target }}
           go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server

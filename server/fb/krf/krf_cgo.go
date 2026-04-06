@@ -25,15 +25,16 @@ package krf
 /*
 #cgo CFLAGS: -I${SRCDIR}/native
 // On Linux ARM64, libkrfiles.so uses outline LSE atomics
-// (__aarch64_ldadd8_acq_rel and friends) that live in libgcc_s.so.1 with
-// default visibility. gcc's implicit static libgcc.a also contains them
-// but marks them STV_HIDDEN, so the linker refuses to use them to satisfy
-// a DSO reference ("hidden symbol referenced by DSO"). Explicitly linking
-// -lgcc_s makes the shared-library version available with the right
-// visibility *before* the implicit static libgcc.a is scanned — the
-// symbol is already resolved by then and the hidden copy is never
-// considered. On x86-64 the flag is harmless (no LSE symbols to clash).
-#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -lgcc_s -Wl,-rpath,\$ORIGIN
+// (__aarch64_ldadd8_acq_rel and friends) whose symbols live in
+// libgcc_s.so.1 with default visibility. gcc's *implicit* static
+// libgcc.a also contains them but marks them STV_HIDDEN — the linker
+// refuses to use hidden symbols to satisfy a DSO reference ("hidden
+// symbol referenced by DSO"). -shared-libgcc is a gcc driver flag that
+// tells gcc to link libgcc_s.so instead of the static libgcc.a for its
+// own implicit runtime library, which provides the atomics with the
+// correct visibility. On x86-64 the flag is harmless. Requires
+// CGO_LDFLAGS_ALLOW to include -shared-libgcc (set in CI env).
+#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -shared-libgcc -Wl,-rpath,\$ORIGIN
 #cgo darwin LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,@loader_path
 
 #include <stdlib.h>

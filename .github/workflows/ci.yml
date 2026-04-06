@@ -25,7 +25,7 @@ jobs:
     # tests exercise fb.Fake, but the header has to exist for cgo to
     # compile the shim bridge translation unit.
     env:
-      CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*'
+      CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-shared-libgcc'
     steps:
       - uses: actions/checkout@v4
 
@@ -118,7 +118,7 @@ jobs:
         # expansion.
         env:
           CGO_ENABLED: '1'
-          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-shared-libgcc'
         run: |
           mkdir -p server/dist/${{ matrix.target }}
           go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server
