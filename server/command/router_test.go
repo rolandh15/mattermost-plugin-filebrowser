@@ -50,8 +50,7 @@ func TestRouter_Help(t *testing.T) {
 	// surface without reading a wiki.
 	text := strings.ToLower(resp.Text)
 	assert.Contains(t, text, "connect")
-	assert.Contains(t, text, "browse")
-	assert.Contains(t, text, "save")
+	assert.Contains(t, text, "ls")
 	assert.Contains(t, text, "share")
 	assert.Contains(t, text, "search")
 	assert.Contains(t, text, "disconnect")
@@ -199,12 +198,64 @@ func TestRouter_ShareNotFoundReturnsFriendlyMessage(t *testing.T) {
 	assert.Contains(t, strings.ToLower(resp.Text), "no file found")
 }
 
-func TestRouter_BrowseSaveSearchAreDeferred(t *testing.T) {
+func TestRouter_UploadIsDeferred(t *testing.T) {
 	r, _ := newTestRouter(t)
 
-	for _, sub := range []string{"browse", "save", "search"} {
+	for _, sub := range []string{"upload", "save"} {
 		resp, err := r.Handle(context.Background(), "U1", "/filebrowser "+sub+" /some/path")
 		require.NoError(t, err, "subcommand %s should not error", sub)
-		assert.Contains(t, strings.ToLower(resp.Text), "follow-up", "subcommand %s should announce the deferral", sub)
+		assert.Contains(t, strings.ToLower(resp.Text), "not available", "subcommand %s should announce the deferral", sub)
 	}
+}
+
+func TestRouter_BrowseHappyPath(t *testing.T) {
+	fake := fb.NewFake()
+	fake.AddUser("alice", "hunter2")
+	fake.Seed("/docs/readme.md", []byte("hello"))
+	fake.Seed("/docs/notes.txt", []byte("world"))
+	token, err := fake.Login(context.Background(), "alice", "hunter2")
+	require.NoError(t, err)
+
+	store := newRecordingTokenStore()
+	require.NoError(t, store.SetToken(context.Background(), "U1", token))
+
+	r := New(fake, store)
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser ls /docs")
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "readme.md")
+	assert.Contains(t, resp.Text, "notes.txt")
+	assert.Contains(t, resp.Text, "2 items")
+}
+
+func TestRouter_BrowseDefaultsToRoot(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser ls")
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "/")
+}
+
+func TestRouter_SearchHappyPath(t *testing.T) {
+	fake := fb.NewFake()
+	fake.AddUser("alice", "hunter2")
+	fake.Seed("/reports/q4.pdf", []byte("data"))
+	fake.Seed("/reports/q3.pdf", []byte("data"))
+	token, err := fake.Login(context.Background(), "alice", "hunter2")
+	require.NoError(t, err)
+
+	store := newRecordingTokenStore()
+	require.NoError(t, store.SetToken(context.Background(), "U1", token))
+
+	r := New(fake, store)
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser search q4")
+	require.NoError(t, err)
+	assert.Contains(t, resp.Text, "q4.pdf")
+}
+
+func TestRouter_SearchNoArgs(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser search")
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(resp.Text), "usage")
 }

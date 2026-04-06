@@ -80,8 +80,12 @@ func (r *Router) Handle(ctx context.Context, mmUserID, raw string) (*Response, e
 		return r.handleShare(ctx, mmUserID, args)
 	case "disconnect":
 		return r.handleDisconnect(ctx, mmUserID)
-	case "browse", "save", "search":
-		return &Response{Text: fmt.Sprintf("`%s` is not available yet — it is scheduled for a follow-up release. For now, use `/filebrowser share` to get a link or manage files directly in the Filebrowser web UI.", sub)}, nil
+	case "browse", "ls":
+		return r.handleBrowse(ctx, mmUserID, args)
+	case "search":
+		return r.handleSearch(ctx, mmUserID, args)
+	case "upload", "save":
+		return &Response{Text: "`upload` is not available yet — it requires file attachment support. For now, upload files directly in the Filebrowser web UI."}, nil
 	default:
 		return unknownResponse(sub), nil
 	}
@@ -89,9 +93,8 @@ func (r *Router) Handle(ctx context.Context, mmUserID, raw string) (*Response, e
 
 func helpResponse() *Response {
 	return &Response{Text: "**Filebrowser** — available subcommands:\n" +
-		"• `/filebrowser connect` — link your Filebrowser account (one-time)\n" +
-		"• `/filebrowser browse [path]` — list a directory\n" +
-		"• `/filebrowser save <path>` — upload the file you just attached in this channel\n" +
+		"• `/filebrowser connect <user> <pass>` — link your Filebrowser account\n" +
+		"• `/filebrowser ls [path]` — list a directory (alias: `browse`)\n" +
 		"• `/filebrowser share <path>` — get a shareable link for a file\n" +
 		"• `/filebrowser search <query>` — search across Filebrowser\n" +
 		"• `/filebrowser disconnect` — forget your stored credentials\n" +
@@ -140,6 +143,104 @@ func (r *Router) handleConnect(ctx context.Context, mmUserID string, args []stri
 	}
 
 	return &Response{Text: fmt.Sprintf("Connected to Filebrowser as `%s`. You can now run `/filebrowser share <path>` to create share links.", username)}, nil
+}
+
+// handleBrowse lists the contents of a directory. Defaults to "/" if no path given.
+func (r *Router) handleBrowse(ctx context.Context, mmUserID string, args []string) (*Response, error) {
+	dir := "/"
+	if len(args) > 0 {
+		dir = args[0]
+	}
+
+	token, err := r.tokens.GetToken(ctx, mmUserID)
+	if err != nil {
+		if errors.Is(err, ErrNotConnected) {
+			return &Response{Text: "You are not connected to Filebrowser. Run `/filebrowser connect <username> <password>` first."}, nil
+		}
+		return nil, fmt.Errorf("browse: read token: %w", err)
+	}
+
+	entries, err := r.client.List(ctx, token, dir)
+	if err != nil {
+		if errors.Is(err, fb.ErrUnauthorized) {
+			return &Response{Text: "Your Filebrowser session has expired. Run `/filebrowser connect` again."}, nil
+		}
+		if errors.Is(err, fb.ErrNotFound) {
+			return &Response{Text: fmt.Sprintf("Directory `%s` not found.", dir)}, nil
+		}
+		return nil, fmt.Errorf("browse: list failed: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return &Response{Text: fmt.Sprintf("`%s` is empty.", dir)}, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%s** (%d items)\n\n", dir, len(entries))
+	for _, e := range entries {
+		icon := ":page_facing_up:"
+		if e.IsDir {
+			icon = ":file_folder:"
+		}
+		if e.Size > 0 {
+			fmt.Fprintf(&b, "%s `%s` (%s)\n", icon, e.Name, humanSize(e.Size))
+		} else {
+			fmt.Fprintf(&b, "%s `%s`\n", icon, e.Name)
+		}
+	}
+	return &Response{Text: b.String()}, nil
+}
+
+func humanSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// handleSearch finds entries matching a query string.
+func (r *Router) handleSearch(ctx context.Context, mmUserID string, args []string) (*Response, error) {
+	if len(args) < 1 {
+		return &Response{Text: "Usage: `/filebrowser search <query>` — for example `/filebrowser search report`."}, nil
+	}
+	query := strings.Join(args, " ")
+
+	token, err := r.tokens.GetToken(ctx, mmUserID)
+	if err != nil {
+		if errors.Is(err, ErrNotConnected) {
+			return &Response{Text: "You are not connected to Filebrowser. Run `/filebrowser connect <username> <password>` first."}, nil
+		}
+		return nil, fmt.Errorf("search: read token: %w", err)
+	}
+
+	entries, err := r.client.Search(ctx, token, "/", query)
+	if err != nil {
+		if errors.Is(err, fb.ErrUnauthorized) {
+			return &Response{Text: "Your Filebrowser session has expired. Run `/filebrowser connect` again."}, nil
+		}
+		return nil, fmt.Errorf("search: failed: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return &Response{Text: fmt.Sprintf("No results for `%s`.", query)}, nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "**Search results for** `%s` (%d matches)\n\n", query, len(entries))
+	for _, e := range entries {
+		icon := ":page_facing_up:"
+		if e.IsDir {
+			icon = ":file_folder:"
+		}
+		fmt.Fprintf(&b, "%s `%s`\n", icon, e.Path)
+	}
+	return &Response{Text: b.String()}, nil
 }
 
 // handleShare resolves the user's stored token, asks the Filebrowser
