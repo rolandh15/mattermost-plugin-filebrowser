@@ -25,7 +25,7 @@ jobs:
     # tests exercise fb.Fake, but the header has to exist for cgo to
     # compile the shim bridge translation unit.
     env:
-      CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-shared-libgcc'
+      CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-fuse-ld=.*'
     steps:
       - uses: actions/checkout@v4
 
@@ -107,20 +107,27 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Install gold linker (ARM64 only)
+        if: matrix.target == 'linux-arm64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-gold
+
       - name: Fetch krfiles native artifacts
         run: ./build/fetch-krfiles.sh ${{ matrix.target }}
 
       - name: Build native plugin binary
-        # CGO_LDFLAGS_ALLOW permits the rpath forms cgo's security
-        # allowlist rejects by default (@loader_path on macOS, $ORIGIN on
-        # Linux). Both are whitelisted here rather than in krf_cgo.go
-        # because cgo evaluates the allowlist at the package level before
-        # expansion.
         env:
           CGO_ENABLED: '1'
-          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-shared-libgcc'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-fuse-ld=.*'
         run: |
+          # On linux-arm64 the BFD linker chokes on hidden LSE atomic
+          # symbols in libgcc.a referenced by libkrfiles.so — gold
+          # handles this correctly by leaving DSO resolution to ld.so.
+          EXTRA_LDFLAGS=""
+          if [[ "${{ matrix.target }}" == "linux-arm64" ]]; then
+            EXTRA_LDFLAGS="-fuse-ld=gold"
+          fi
           mkdir -p server/dist/${{ matrix.target }}
+          CGO_LDFLAGS="$EXTRA_LDFLAGS" \
           go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server
           # Drop the matching shared library next to the binary. The
           # bundle job (release.yml) and every Mattermost server rely on

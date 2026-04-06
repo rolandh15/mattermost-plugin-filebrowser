@@ -24,17 +24,16 @@ package krf
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/native
-// On Linux ARM64, libkrfiles.so uses outline LSE atomics
-// (__aarch64_ldadd8_acq_rel and friends) whose symbols live in
-// libgcc_s.so.1 with default visibility. gcc's *implicit* static
-// libgcc.a also contains them but marks them STV_HIDDEN — the linker
-// refuses to use hidden symbols to satisfy a DSO reference ("hidden
-// symbol referenced by DSO"). -shared-libgcc is a gcc driver flag that
-// tells gcc to link libgcc_s.so instead of the static libgcc.a for its
-// own implicit runtime library, which provides the atomics with the
-// correct visibility. On x86-64 the flag is harmless. Requires
-// CGO_LDFLAGS_ALLOW to include -shared-libgcc (set in CI env).
-#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -shared-libgcc -Wl,-rpath,\$ORIGIN
+// On Linux ARM64, libkrfiles.so uses outline LSE atomics whose symbols
+// (__aarch64_ldadd8_acq_rel etc.) live in libgcc_s.so.1 with default
+// visibility at runtime. The default BFD linker also scans gcc's static
+// libgcc.a, finds the same symbols with STV_HIDDEN visibility, and
+// refuses to let the DSO reference them ("hidden symbol referenced by
+// DSO"). The gold linker (-fuse-ld=gold) does not have this bug — it
+// correctly leaves DSO symbol resolution to the dynamic linker.
+// -fuse-ld=gold is passed via CGO_LDFLAGS + CGO_LDFLAGS_ALLOW in CI
+// because cgo's built-in security filter rejects it from #cgo directives.
+#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,\$ORIGIN
 #cgo darwin LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,@loader_path
 
 #include <stdlib.h>

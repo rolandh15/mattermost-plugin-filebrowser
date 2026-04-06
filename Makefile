@@ -57,7 +57,7 @@ fetch-krfiles:
 build-native: fetch-krfiles
 	mkdir -p server/dist/$(HOST_TARGET)
 	CGO_ENABLED=1 \
-	CGO_LDFLAGS_ALLOW='-Wl,-rpath,(@loader_path|\$$ORIGIN).*|-shared-libgcc' \
+	CGO_LDFLAGS_ALLOW='-Wl,-rpath,(@loader_path|\$$ORIGIN).*|-fuse-ld=.*' \
 	go build -trimpath -o server/dist/$(HOST_TARGET)/plugin ./server
 
 ## dist: build native host binary and bundle a host-only plugin tarball

@@ -74,15 +74,24 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Install gold linker (ARM64 only)
+        if: matrix.target == 'linux-arm64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-gold
+
       - name: Fetch krfiles native artifacts
         run: ./build/fetch-krfiles.sh ${{ matrix.target }}
 
       - name: Build native plugin binary
         env:
           CGO_ENABLED: '1'
-          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-shared-libgcc'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-fuse-ld=.*'
         run: |
+          EXTRA_LDFLAGS=""
+          if [[ "${{ matrix.target }}" == "linux-arm64" ]]; then
+            EXTRA_LDFLAGS="-fuse-ld=gold"
+          fi
           mkdir -p server/dist/${{ matrix.target }}
+          CGO_LDFLAGS="$EXTRA_LDFLAGS" \
           go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server
           # Stage the matching shared library next to the binary. Each
           # target gets its own subdirectory inside server/dist/ so the
