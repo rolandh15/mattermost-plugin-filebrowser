@@ -24,16 +24,16 @@ package krf
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/native
-// On Linux we tell the linker to ignore unresolved symbols that originate
-// in shared libraries. libkrfiles.so references a handful of ARM64 LSE
-// atomic helpers (__aarch64_ldadd8_acq_rel and friends) that live in the
-// static libgcc.a as hidden symbols — gcc's auto-linked libgcc.a cannot
-// satisfy them from a DSO reference, so the link fails with "hidden symbol
-// referenced by DSO" on aarch64. Deferring resolution to runtime ld.so is
-// the standard fix and matches how every other consumer of libkrfiles.so
-// works: the shared library brings its own libgcc_s dependency and the
-// dynamic loader resolves the atomics against it when the plugin loads.
-#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,\$ORIGIN -Wl,--unresolved-symbols=ignore-in-shared-libs
+// On Linux ARM64, libkrfiles.so uses outline LSE atomics
+// (__aarch64_ldadd8_acq_rel and friends) that live in libgcc_s.so.1 with
+// default visibility. gcc's implicit static libgcc.a also contains them
+// but marks them STV_HIDDEN, so the linker refuses to use them to satisfy
+// a DSO reference ("hidden symbol referenced by DSO"). Explicitly linking
+// -lgcc_s makes the shared-library version available with the right
+// visibility *before* the implicit static libgcc.a is scanned — the
+// symbol is already resolved by then and the hidden copy is never
+// considered. On x86-64 the flag is harmless (no LSE symbols to clash).
+#cgo linux LDFLAGS: -L${SRCDIR}/native -lkrfiles -lgcc_s -Wl,-rpath,\$ORIGIN
 #cgo darwin LDFLAGS: -L${SRCDIR}/native -lkrfiles -Wl,-rpath,@loader_path
 
 #include <stdlib.h>
