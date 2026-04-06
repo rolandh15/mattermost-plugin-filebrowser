@@ -54,7 +54,7 @@ func (p *Plugin) OnActivate() error {
 	// OnActivate actually calls into it. The plugin therefore activates
 	// identically in both modes and only fails at the point a user runs
 	// a command that needs the shared library.
-	p.router = command.New(krf.New(cfg.FilebrowserURL), newKVTokenStore(p.API))
+	p.router = command.New(krf.New(cfg.FilebrowserURL), newKVTokenStore(p.API), &mmFileGetter{api: p.API})
 
 	if err := p.API.RegisterCommand(p.buildCommand()); err != nil {
 		return fmt.Errorf("failed to register /%s command: %w", commandTrigger, err)
@@ -92,7 +92,7 @@ func (p *Plugin) ExecuteCommand(_ *plugin.Context, args *model.CommandArgs) (*mo
 		return ephemeral("Filebrowser plugin is not fully initialised. Please wait a moment and retry."), nil
 	}
 
-	resp, err := p.router.Handle(context.Background(), args.UserId, args.Command)
+	resp, err := p.router.Handle(context.Background(), args.UserId, args.ChannelId, args.Command)
 	if err != nil {
 		p.API.LogError("filebrowser: command handler failed", "user", args.UserId, "err", err.Error())
 		return ephemeral(fmt.Sprintf("Sorry, something went wrong: `%s`.", err.Error())), nil

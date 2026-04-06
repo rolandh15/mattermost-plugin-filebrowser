@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/rolandh15/mattermost-plugin-filebrowser/server/fb"
@@ -34,6 +35,15 @@ type TokenStore interface {
 // plugin's KVStore-backed implementation.
 var ErrNotConnected = errors.New("filebrowser: not connected")
 
+// ErrNoFile is returned by FileGetter when no recent file attachment exists.
+var ErrNoFile = errors.New("filebrowser: no recent file in channel")
+
+// FileGetter retrieves the most recent file attachment from a Mattermost
+// channel. The plugin implements this against p.API; tests use a fake.
+type FileGetter interface {
+	GetRecentFile(channelID string) (name string, content io.ReadCloser, err error)
+}
+
 // Response is a framework-neutral command reply. The plugin translates it
 // into a *model.CommandResponse (ephemeral, with Text).
 type Response struct {
@@ -45,18 +55,18 @@ type Response struct {
 type Router struct {
 	client fb.Client
 	tokens TokenStore
+	files  FileGetter
 }
 
 // New constructs a Router that talks to the given Filebrowser client and
 // persists per-user tokens via the given store.
-func New(client fb.Client, tokens TokenStore) *Router {
-	return &Router{client: client, tokens: tokens}
+func New(client fb.Client, tokens TokenStore, files FileGetter) *Router {
+	return &Router{client: client, tokens: tokens, files: files}
 }
 
 // Handle parses the raw command string (e.g. "/filebrowser browse /reports")
-// and dispatches it. The first token must be "/filebrowser"; anything else
-// is caller error and panics — the plugin only routes its own trigger here.
-func (r *Router) Handle(ctx context.Context, mmUserID, raw string) (*Response, error) {
+// and dispatches it. channelID is needed for upload (to find recent files).
+func (r *Router) Handle(ctx context.Context, mmUserID, channelID, raw string) (*Response, error) {
 	fields := strings.Fields(raw)
 	if len(fields) == 0 || fields[0] != "/filebrowser" {
 		return nil, fmt.Errorf("router: unexpected command prefix in %q", raw)
@@ -85,7 +95,7 @@ func (r *Router) Handle(ctx context.Context, mmUserID, raw string) (*Response, e
 	case "search":
 		return r.handleSearch(ctx, mmUserID, args)
 	case "upload", "save":
-		return &Response{Text: "`upload` is not available yet — it requires file attachment support. For now, upload files directly in the Filebrowser web UI."}, nil
+		return r.handleUpload(ctx, mmUserID, channelID, args)
 	default:
 		return unknownResponse(sub), nil
 	}
@@ -97,6 +107,7 @@ func helpResponse() *Response {
 		"• `/filebrowser ls [path]` — list a directory (alias: `browse`)\n" +
 		"• `/filebrowser share <path>` — get a shareable link for a file\n" +
 		"• `/filebrowser search <query>` — search across Filebrowser\n" +
+		"• `/filebrowser upload [path]` — upload the last file posted in this channel\n" +
 		"• `/filebrowser disconnect` — forget your stored credentials\n" +
 		"• `/filebrowser help` — show this message"}
 }
@@ -202,6 +213,46 @@ func humanSize(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// handleUpload grabs the most recent file attachment from the current channel
+// and uploads it to the specified path on Filebrowser. If no path is given,
+// uploads to "/" + the original filename.
+func (r *Router) handleUpload(ctx context.Context, mmUserID, channelID string, args []string) (*Response, error) {
+	token, err := r.tokens.GetToken(ctx, mmUserID)
+	if err != nil {
+		if errors.Is(err, ErrNotConnected) {
+			return &Response{Text: "You are not connected to Filebrowser. Run `/filebrowser connect <username> <password>` first."}, nil
+		}
+		return nil, fmt.Errorf("upload: read token: %w", err)
+	}
+
+	name, content, err := r.files.GetRecentFile(channelID)
+	if err != nil {
+		if errors.Is(err, ErrNoFile) {
+			return &Response{Text: "No recent file attachment found in this channel. Post a file first, then run `/filebrowser upload [path]`."}, nil
+		}
+		return nil, fmt.Errorf("upload: get file: %w", err)
+	}
+	defer content.Close()
+
+	remotePath := "/" + name
+	if len(args) > 0 {
+		remotePath = args[0]
+		// If path looks like a directory (ends with /), append filename
+		if strings.HasSuffix(remotePath, "/") {
+			remotePath += name
+		}
+	}
+
+	if err := r.client.Upload(ctx, token, remotePath, content); err != nil {
+		if errors.Is(err, fb.ErrUnauthorized) {
+			return &Response{Text: "Your Filebrowser session has expired. Run `/filebrowser connect` again."}, nil
+		}
+		return nil, fmt.Errorf("upload: failed: %w", err)
+	}
+
+	return &Response{Text: fmt.Sprintf("Uploaded `%s` to `%s`.", name, remotePath)}, nil
 }
 
 // handleSearch finds entries matching a query string.
