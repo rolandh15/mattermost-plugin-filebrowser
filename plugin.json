@@ -5,14 +5,14 @@
     "homepage_url": "https://github.com/rolandh15/mattermost-plugin-filebrowser",
     "support_url": "https://github.com/rolandh15/mattermost-plugin-filebrowser/issues",
     "icon_path": "assets/icon.svg",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "min_server_version": "9.5.0",
     "server": {
         "executables": {
-            "linux-amd64": "server/dist/plugin-linux-amd64",
-            "linux-arm64": "server/dist/plugin-linux-arm64",
-            "darwin-amd64": "server/dist/plugin-darwin-amd64",
-            "darwin-arm64": "server/dist/plugin-darwin-arm64"
+            "linux-amd64":  "server/dist/linux-amd64/plugin",
+            "linux-arm64":  "server/dist/linux-arm64/plugin",
+            "darwin-amd64": "server/dist/darwin-amd64/plugin",
+            "darwin-arm64": "server/dist/darwin-arm64/plugin"
         }
     },
     "settings_schema": {

@@ -84,3 +84,127 @@ func TestRouter_Disconnect(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, strings.ToLower(resp.Text), "disconnect")
 }
+
+// recordingTokenStore tracks SetToken calls so connect tests can assert
+// that the returned token was actually persisted. It is in-memory only.
+type recordingTokenStore struct {
+	tokens map[string]string
+}
+
+func newRecordingTokenStore() *recordingTokenStore {
+	return &recordingTokenStore{tokens: make(map[string]string)}
+}
+
+func (s *recordingTokenStore) GetToken(_ context.Context, userID string) (string, error) {
+	t, ok := s.tokens[userID]
+	if !ok {
+		return "", ErrNotConnected
+	}
+	return t, nil
+}
+
+func (s *recordingTokenStore) SetToken(_ context.Context, userID, token string) error {
+	s.tokens[userID] = token
+	return nil
+}
+
+func (s *recordingTokenStore) ClearToken(_ context.Context, userID string) error {
+	delete(s.tokens, userID)
+	return nil
+}
+
+func TestRouter_ConnectSuccessStoresToken(t *testing.T) {
+	fake := fb.NewFake()
+	fake.AddUser("alice", "hunter2")
+	store := newRecordingTokenStore()
+	r := New(fake, store)
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser connect alice hunter2")
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(resp.Text), "connected")
+	// The Fake's login returns a deterministic hex token; all we care about
+	// is that *something* non-empty was persisted for the MM user.
+	assert.NotEmpty(t, store.tokens["U1"])
+}
+
+func TestRouter_ConnectMissingCredentialsShowsUsage(t *testing.T) {
+	fake := fb.NewFake()
+	r := New(fake, newRecordingTokenStore())
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser connect")
+	require.NoError(t, err) // usage message is not an error
+	assert.Contains(t, strings.ToLower(resp.Text), "usage")
+}
+
+func TestRouter_ConnectBadCredentialsSurfacesFriendlyMessage(t *testing.T) {
+	fake := fb.NewFake()
+	fake.AddUser("alice", "hunter2")
+	store := newRecordingTokenStore()
+	r := New(fake, store)
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser connect alice wrong")
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(resp.Text), "login failed")
+	assert.Empty(t, store.tokens["U1"]) // nothing should have been persisted
+}
+
+func TestRouter_ShareHappyPath(t *testing.T) {
+	fake := fb.NewFake()
+	fake.AddUser("alice", "hunter2")
+	fake.Seed("/reports/q4.pdf", []byte("pretend this is a PDF"))
+	token, err := fake.Login(context.Background(), "alice", "hunter2")
+	require.NoError(t, err)
+
+	store := newRecordingTokenStore()
+	require.NoError(t, store.SetToken(context.Background(), "U1", token))
+
+	r := New(fake, store)
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser share /reports/q4.pdf")
+	require.NoError(t, err)
+	// Fake's Share builds a stable URL starting with "https://fake.filebrowser.invalid/share".
+	assert.Contains(t, resp.Text, "https://fake.filebrowser.invalid/share/reports/q4.pdf")
+}
+
+func TestRouter_ShareNotConnectedPromptsConnect(t *testing.T) {
+	fake := fb.NewFake()
+	r := New(fake, newRecordingTokenStore())
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser share /whatever.txt")
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(resp.Text), "not connected")
+	assert.Contains(t, strings.ToLower(resp.Text), "connect")
+}
+
+func TestRouter_ShareMissingPathShowsUsage(t *testing.T) {
+	fake := fb.NewFake()
+	r := New(fake, newRecordingTokenStore())
+
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser share")
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(resp.Text), "usage")
+}
+
+func TestRouter_ShareNotFoundReturnsFriendlyMessage(t *testing.T) {
+	fake := fb.NewFake()
+	fake.AddUser("alice", "hunter2")
+	token, err := fake.Login(context.Background(), "alice", "hunter2")
+	require.NoError(t, err)
+
+	store := newRecordingTokenStore()
+	require.NoError(t, store.SetToken(context.Background(), "U1", token))
+
+	r := New(fake, store)
+	resp, err := r.Handle(context.Background(), "U1", "/filebrowser share /does/not/exist.txt")
+	require.NoError(t, err)
+	assert.Contains(t, strings.ToLower(resp.Text), "no file found")
+}
+
+func TestRouter_BrowseSaveSearchAreDeferred(t *testing.T) {
+	r, _ := newTestRouter(t)
+
+	for _, sub := range []string{"browse", "save", "search"} {
+		resp, err := r.Handle(context.Background(), "U1", "/filebrowser "+sub+" /some/path")
+		require.NoError(t, err, "subcommand %s should not error", sub)
+		assert.Contains(t, strings.ToLower(resp.Text), "follow-up", "subcommand %s should announce the deferral", sub)
+	}
+}

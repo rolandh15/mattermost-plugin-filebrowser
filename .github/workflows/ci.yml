@@ -17,6 +17,15 @@ jobs:
   verify:
     name: Verify
     runs-on: ubuntu-latest
+    # Verify runs `go vet` and `go test -race` across the whole tree. The
+    # race detector needs cgo, and enabling cgo means the krf package's
+    # build-tagged cgo file gets compiled too, which requires the krfiles
+    # native headers on disk. So Verify fetches linux-amd64 krfiles before
+    # vet/test — the shared library itself is never invoked because the
+    # tests exercise fb.Fake, but the header has to exist for cgo to
+    # compile the shim bridge translation unit.
+    env:
+      CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-fuse-ld=.*'
     steps:
       - uses: actions/checkout@v4
 
@@ -35,6 +44,9 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      - name: Fetch krfiles native artifacts (linux-amd64)
+        run: ./build/fetch-krfiles.sh linux-amd64
+
       - name: Download modules
         run: go mod download
 
@@ -42,6 +54,14 @@ jobs:
         run: go vet ./...
 
       - name: go test
+        # LD_LIBRARY_PATH points at the fetched libkrfiles.so so the test
+        # binary for the `server` package — which imports krf transitively
+        # via plugin.go — can resolve its shared-library dependency at
+        # startup. The tests themselves never call any krf method (they
+        # exercise fb.Fake), but Go's dynamic loader has to open every
+        # DT_NEEDED entry before main().
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/server/fb/krf/native
         run: go test -race -coverprofile=coverage.out ./...
 
       - name: Upload coverage report
@@ -58,27 +78,25 @@ jobs:
           jq -e '.id and .server.executables and .settings_schema' plugin.json > /dev/null
 
   build-matrix:
+    # Each matrix job runs on a runner whose native OS/arch matches the
+    # target — we do not cross-compile because the cgo shim links against
+    # a krfiles native library fetched from a release archive, and the
+    # host toolchain needs to match the target ABI. Treat each runner as
+    # a first-class build host.
     name: Build (${{ matrix.target }})
     needs: verify
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: linux-amd64
             os: ubuntu-latest
-            goos: linux
-            goarch: amd64
           - target: linux-arm64
             os: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
           - target: darwin-amd64
             os: macos-13
-            goos: darwin
-            goarch: amd64
           - target: darwin-arm64
             os: macos-latest
-            goos: darwin
-            goarch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -89,17 +107,55 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Build server binary
-        env:
-          CGO_ENABLED: '0'
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          mkdir -p server/dist
-          go build -trimpath -o server/dist/plugin-${{ matrix.target }} ./server
+      - name: Install gold linker (ARM64 only)
+        if: matrix.target == 'linux-arm64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-gold
 
-      - name: Upload binary
+      - name: Fetch krfiles native artifacts
+        run: ./build/fetch-krfiles.sh ${{ matrix.target }}
+
+      - name: Build native plugin binary
+        env:
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-fuse-ld=.*'
+        run: |
+          # On linux-arm64 the BFD linker chokes on hidden LSE atomic
+          # symbols in libgcc.a referenced by libkrfiles.so — gold
+          # handles this correctly by leaving DSO resolution to ld.so.
+          EXTRA_LDFLAGS=""
+          if [[ "${{ matrix.target }}" == "linux-arm64" ]]; then
+            EXTRA_LDFLAGS="-fuse-ld=gold"
+          fi
+          mkdir -p server/dist/${{ matrix.target }}
+          CGO_LDFLAGS="$EXTRA_LDFLAGS" \
+          go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server
+          # Drop the matching shared library next to the binary. The
+          # bundle job (release.yml) and every Mattermost server rely on
+          # this being in the same directory as the binary because the
+          # linker baked rpath=@loader_path (Darwin) / $ORIGIN (Linux).
+          cp server/fb/krf/native/libkrfiles.* server/dist/${{ matrix.target }}/
+
+      - name: Verify the binary dynamically links libkrfiles
+        # Catches regressions where krf_shim_bridge.c disappears or the
+        # plugin somehow gets built without cgo: either mistake produces a
+        # static binary that silently skips the share command at runtime.
+        run: |
+          if [[ "${{ matrix.target }}" == darwin-* ]]; then
+            if ! otool -L server/dist/${{ matrix.target }}/plugin | grep -q "libkrfiles.dylib"; then
+              echo "::error::plugin binary does not link libkrfiles.dylib"
+              otool -L server/dist/${{ matrix.target }}/plugin
+              exit 1
+            fi
+          else
+            if ! ldd server/dist/${{ matrix.target }}/plugin 2>/dev/null | grep -q "libkrfiles.so"; then
+              echo "::error::plugin binary does not link libkrfiles.so"
+              ldd server/dist/${{ matrix.target }}/plugin || true
+              exit 1
+            fi
+          fi
+
+      - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
           name: plugin-${{ matrix.target }}
-          path: server/dist/plugin-${{ matrix.target }}
+          path: server/dist/${{ matrix.target }}/

@@ -46,27 +46,24 @@ jobs:
           fi
 
   build:
+    # Each matrix job builds natively for its own OS/arch; the cgo shim
+    # links against a krfiles shared library fetched at build time for
+    # that target. Cross-compile would require a target-specific C
+    # toolchain for every runner, which is not worth the complexity.
     name: Build (${{ matrix.target }})
     needs: validate
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: linux-amd64
             os: ubuntu-latest
-            goos: linux
-            goarch: amd64
           - target: linux-arm64
             os: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
           - target: darwin-amd64
             os: macos-13
-            goos: darwin
-            goarch: amd64
           - target: darwin-arm64
             os: macos-latest
-            goos: darwin
-            goarch: arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -77,20 +74,38 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Build server binary
-        env:
-          CGO_ENABLED: '0'
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          mkdir -p server/dist
-          go build -trimpath -o server/dist/plugin-${{ matrix.target }} ./server
+      - name: Install gold linker (ARM64 only)
+        if: matrix.target == 'linux-arm64'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq binutils-gold
 
-      - name: Upload binary
+      - name: Fetch krfiles native artifacts
+        run: ./build/fetch-krfiles.sh ${{ matrix.target }}
+
+      - name: Build native plugin binary
+        env:
+          CGO_ENABLED: '1'
+          CGO_LDFLAGS_ALLOW: '-Wl,-rpath,(@loader_path|\$ORIGIN).*|-fuse-ld=.*'
+        run: |
+          EXTRA_LDFLAGS=""
+          if [[ "${{ matrix.target }}" == "linux-arm64" ]]; then
+            EXTRA_LDFLAGS="-fuse-ld=gold"
+          fi
+          mkdir -p server/dist/${{ matrix.target }}
+          CGO_LDFLAGS="$EXTRA_LDFLAGS" \
+          go build -trimpath -o server/dist/${{ matrix.target }}/plugin ./server
+          # Stage the matching shared library next to the binary. Each
+          # target gets its own subdirectory inside server/dist/ so the
+          # two linux targets do not clobber each other's libkrfiles.so
+          # when the bundle job flattens every arch into a single tarball.
+          cp server/fb/krf/native/libkrfiles.* server/dist/${{ matrix.target }}/
+
+      - name: Upload target artifact
         uses: actions/upload-artifact@v4
         with:
           name: plugin-${{ matrix.target }}
-          path: server/dist/plugin-${{ matrix.target }}
+          # The artifact contains the per-target subtree as-is; the bundle
+          # job will download all four into matching subdirectories.
+          path: server/dist/${{ matrix.target }}/
 
   bundle:
     name: Bundle plugin tarball
@@ -99,19 +114,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all server binaries
+      - name: Download all target artifacts
         uses: actions/download-artifact@v4
         with:
           path: downloaded
 
       - name: Assemble plugin bundle
+        # Each downloaded artifact directory is named after its target
+        # ("plugin-linux-arm64", "plugin-darwin-arm64", …) and contains
+        # the plugin binary plus its libkrfiles shared library. We move
+        # them into bundle/server/dist/<target>/ to match the paths
+        # plugin.json's `server.executables` map points at, and drop the
+        # .dSYM directories (macOS debug symbols) which bloat the tarball
+        # without being needed at runtime.
         run: |
           mkdir -p bundle/server/dist
-          find downloaded -type f -name 'plugin-*' -exec cp {} bundle/server/dist/ \;
-          chmod +x bundle/server/dist/plugin-*
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            src="downloaded/plugin-$target"
+            dst="bundle/server/dist/$target"
+            mkdir -p "$dst"
+            cp "$src/plugin" "$dst/"
+            cp "$src/libkrfiles."* "$dst/" 2>/dev/null || true
+            rm -rf "$dst"/*.dSYM
+            chmod +x "$dst/plugin"
+          done
           cp plugin.json bundle/
           [ -f assets/icon.svg ] && mkdir -p bundle/assets && cp assets/icon.svg bundle/assets/ || true
           tar czf mattermost-plugin-filebrowser-${{ needs.validate.outputs.version }}.tar.gz -C bundle .
+          echo "== bundle contents =="
+          tar tzf mattermost-plugin-filebrowser-${{ needs.validate.outputs.version }}.tar.gz | sort
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

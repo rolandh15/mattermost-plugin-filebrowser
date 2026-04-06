@@ -3,6 +3,7 @@
 *.out
 coverage.*
 dist/
+bundle/
 bin/
 vendor/
 
