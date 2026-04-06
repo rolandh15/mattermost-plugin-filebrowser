@@ -18,6 +18,13 @@ func TestOnActivate(t *testing.T) {
 			cfg.FilebrowserURL = "https://files.example.com"
 			return nil
 		})
+		api.On("EnsureBotUser", mock.Anything).Return("BOT1", nil)
+		api.On("GetConfig").Return(&model.Config{
+			LocalizationSettings: model.LocalizationSettings{
+				DefaultClientLocale: model.NewPointer("en"),
+			},
+		})
+		api.On("GetBundlePath").Return("", nil)
 		api.On("RegisterCommand", mock.MatchedBy(func(c *model.Command) bool {
 			return c.Trigger == "filebrowser"
 		})).Return(nil)

@@ -1,10 +1,9 @@
 // Package fb is the plugin's abstraction over a Filebrowser instance.
 //
 // The plugin's command handlers depend only on the Client interface defined
-// here; the concrete implementation that shells out to the krfiles
-// Kotlin/Native shared library lives under a separate sub-package guarded by
-// a build tag. Tests use the in-memory Fake in this package so they never
-// touch the network or a real Filebrowser.
+// here; the production implementation (httpfb) talks to Filebrowser's REST
+// API over plain HTTP. Tests use the in-memory Fake in this package so they
+// never touch the network or a real Filebrowser.
 package fb
 
 import (

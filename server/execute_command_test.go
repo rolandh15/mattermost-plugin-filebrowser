@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -26,6 +27,13 @@ func activatedPlugin(t *testing.T) (*Plugin, *plugintest.API) {
 		return nil
 	})
 	api.On("RegisterCommand", mock.Anything).Return(nil)
+	api.On("EnsureBotUser", mock.Anything).Return("BOT1", nil)
+	api.On("GetConfig").Return(&model.Config{
+		LocalizationSettings: model.LocalizationSettings{
+			DefaultClientLocale: model.NewPointer("en"),
+		},
+	})
+	api.On("GetBundlePath").Return("", nil)
 
 	p := &Plugin{}
 	p.SetAPI(api)
@@ -34,7 +42,7 @@ func activatedPlugin(t *testing.T) (*Plugin, *plugintest.API) {
 	// Inject a Fake client + in-memory token store so the tests never touch
 	// the real Filebrowser or the KVStore.
 	fake := fb.NewFake()
-	p.router = command.New(fake, &memoryTokenStore{})
+	p.router = command.New(fake, &memoryTokenStore{}, &nullFileGetter{})
 	return p, api
 }
 
@@ -61,6 +69,12 @@ func (m *memoryTokenStore) SetToken(_ context.Context, user, token string) error
 func (m *memoryTokenStore) ClearToken(_ context.Context, user string) error {
 	delete(m.tokens, user)
 	return nil
+}
+
+type nullFileGetter struct{}
+
+func (n *nullFileGetter) GetRecentFile(_ string) (string, io.ReadCloser, error) {
+	return "", nil, command.ErrNoFile
 }
 
 func TestExecuteCommand_Help(t *testing.T) {

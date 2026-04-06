@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -10,7 +12,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/plugin"
 
 	"github.com/rolandh15/mattermost-plugin-filebrowser/server/command"
-	"github.com/rolandh15/mattermost-plugin-filebrowser/server/fb/krf"
+	"github.com/rolandh15/mattermost-plugin-filebrowser/server/fb/httpfb"
 )
 
 // commandTrigger is the slash command users type in Mattermost: `/filebrowser ...`.
@@ -31,12 +33,15 @@ type Plugin struct {
 	// router dispatches /filebrowser subcommands. Tests may swap this with
 	// a Router built against a Fake client to avoid hitting the network.
 	router *command.Router
+
+	// botUserID is the user ID of the Filebrowser bot account, created on
+	// activation. The bot posts a welcome DM when a user first connects.
+	botUserID string
 }
 
 // OnActivate is called by the Mattermost server when the plugin is installed or
-// enabled. We load the admin-console configuration, validate it, build the
-// krfiles-backed Filebrowser client, wire a KVStore-backed TokenStore into
-// the command router, and register the `/filebrowser` slash command.
+// enabled. We load configuration, create the bot account, build the HTTP-backed
+// Filebrowser client, and register the `/filebrowser` slash command.
 func (p *Plugin) OnActivate() error {
 	cfg := &configuration{}
 	if err := p.API.LoadPluginConfiguration(cfg); err != nil {
@@ -47,14 +52,30 @@ func (p *Plugin) OnActivate() error {
 	}
 	p.setConfiguration(cfg)
 
-	// Build the native-backed Filebrowser client. In cgo builds this
-	// constructs the krfiles shim's global client; in the stub build
-	// (unit tests with CGO_ENABLED=0) it is a no-op wrapper whose
-	// methods all return ErrCgoDisabled — harmless because nothing in
-	// OnActivate actually calls into it. The plugin therefore activates
-	// identically in both modes and only fails at the point a user runs
-	// a command that needs the shared library.
-	p.router = command.New(krf.New(cfg.FilebrowserURL), newKVTokenStore(p.API), &mmFileGetter{api: p.API})
+	botDesc := "I help you browse, share and upload files on your Filebrowser instance. Type `/filebrowser help` to get started."
+	if locale := p.serverLocale(); strings.HasPrefix(locale, "de") {
+		botDesc = "Ich helfe dir, Dateien auf deiner Filebrowser-Instanz zu durchsuchen, zu teilen und hochzuladen. Tippe `/filebrowser help` um loszulegen."
+	}
+
+	botID, err := p.API.EnsureBotUser(&model.Bot{
+		Username:    "filebrowser",
+		DisplayName: "Filebrowser",
+		Description: botDesc,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to ensure bot user: %w", err)
+	}
+	p.botUserID = botID
+
+	// Set bot profile image from the bundled icon.
+	bundlePath, err := p.API.GetBundlePath()
+	if err == nil {
+		if icon, err := os.ReadFile(filepath.Join(bundlePath, "assets", "icon.png")); err == nil {
+			_ = p.API.SetProfileImage(botID, icon)
+		}
+	}
+
+	p.router = command.New(httpfb.New(cfg.FilebrowserURL), newKVTokenStore(p.API), &mmFileGetter{api: p.API})
 
 	if err := p.API.RegisterCommand(p.buildCommand()); err != nil {
 		return fmt.Errorf("failed to register /%s command: %w", commandTrigger, err)
@@ -108,6 +129,16 @@ func ephemeral(text string) *model.CommandResponse {
 		ResponseType: model.CommandResponseTypeEphemeral,
 		Text:         text,
 	}
+}
+
+// serverLocale returns the Mattermost server's default client locale (e.g. "de", "en").
+// Falls back to "en" if the config can't be read.
+func (p *Plugin) serverLocale() string {
+	cfg := p.API.GetConfig()
+	if cfg != nil && cfg.LocalizationSettings.DefaultClientLocale != nil {
+		return *cfg.LocalizationSettings.DefaultClientLocale
+	}
+	return "en"
 }
 
 // buildCommand describes the `/filebrowser` slash command to the Mattermost
